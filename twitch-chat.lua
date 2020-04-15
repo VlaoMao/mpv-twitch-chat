@@ -11,13 +11,13 @@ local opt = {
 	enable_position_binds = true,
 	osd_position = 1, -- osd_position uses 'numpad values'
 	message_duration = 10, -- in seconds
-	message_limit = 10,
+	message_limit = 40,
 	update_interval = 0.3,
-	redraw_interval = 0.5,
+	redraw_interval = 0.3,
 
 	-- text styling
 	font = 'Helvetica',
-	font_size = 8,
+	font_size = 5,
 	font_colour = 'FFFFFF',
 	border_size = 1.0,
 	border_colour = '000000',
@@ -26,6 +26,7 @@ local opt = {
 	mod_border_colour = '111111',
 	streamer_font_colour = '0000FF',
 	streamer_border_colour = '111111',
+	user_border_colour = '111111'
 }
 options.read_options(opt)
 
@@ -102,6 +103,14 @@ end
 local TwitchChat = {}
 TwitchChat.__index = TwitchChat
 
+function readFile(path)
+    local file = io.open(path, "rb")
+    if not file then return nil end
+    local content = file:read "*a"
+    file:close()
+    return content
+end
+
 function TwitchChat.new(video_id)
 	local self = setmetatable({}, TwitchChat)
 
@@ -109,39 +118,39 @@ function TwitchChat.new(video_id)
 	self.messages = Deque.new()
 	self.display = Deque.new()
 
-	local url = string.format('https://rechat.twitch.tv/rechat-messages?start=%s&video_id=v%s', 0, video_id)
-	local resp_body, code, headers, status = https.request(url)
-	if code ~= 400 then
-		error(string.format('received http status %s for "%s"', code, url))
+	print(video_id)
+	local file_content = readFile(video_id)
+	if file_content == nil then
+	    error('error reading' .. video_id)
 	end
 
-	local resp = json.decode(resp_body)
-	local pat_range = '0 is not between (%d+) and (%d+)'
-	self.ts_start, self.ts_end = string.match(resp.errors[1].detail, pat_range)
-	if self.ts_start == nil or self.ts_end == nil then
-		error('unable to parse start and end timestamps')
-	end
+	self.comments = json.decode(file_content).comments
+
+	self.ts_start = 0
+	self.ts_end = 0
 	self.ts_current = self.ts_start
 
 	return self
 end
 
 function TwitchChat:fetch_block(ts_absolute)
-	local url = string.format('https://rechat.twitch.tv/rechat-messages?start=%s&video_id=v%s', math.floor(ts_absolute), self.video_id)
-	local resp_body, code, headers, status = https.request(url)
-	if code == 200 then
-		local resp = json.decode(resp_body)
-		for _, msg in ipairs(resp.data) do
-			local message = {}
-			message.ts = (msg.attributes.timestamp / 1000) - self.ts_start
-			message.user = msg.attributes.tags['display-name']
-			message.text = msg.attributes.message
-			message.is_streamer = msg.attributes.from:lower() == msg.attributes.room:lower()
-			message.is_mod = msg.attributes.tags.mod
-			self.messages:rpush(message)
-		end
-	else
-		error(string.format('http error %s: %s', code, resp_body))
+	local ts_pos = string.format("%.1f", ts_absolute / 100)
+	print(ts_pos)
+	
+	for _, data in ipairs(self.comments) do
+	    local message = {}
+	    message.text = data.message['body']
+	    message.ts = data['content_offset_seconds'] - self.ts_start
+	    message.user = data.commenter['display_name']
+	    message.is_streamer = false
+	    message.is_mod = (data.message.user_badges ~= nil) and (data.message.user_badges['_id'] == 'moderator')
+	    if data.message['user_color'] ~= nil then
+		message.color = string.gsub(data.message['user_color'], "^#", "")
+	    else
+		message.color = '333333'
+	    end
+
+	    self.messages:rpush(message)
 	end
 	self.ts_current = ts_absolute + 30
 end
@@ -199,7 +208,14 @@ function txt_username(msg)
 			opt.border_colour
 		)
 	else
-		s = msg.user .. ':'
+		s = string.format(
+			'{\\1c&H%s&}{\\3c&H%s&}%s:{\\1c&H%s&}{\\3c&H%s&}',
+			msg.color,
+			opt.user_border_colour,
+			msg.user,
+			opt.font_colour,
+			opt.border_colour
+		)
 	end
 	return string.format('{\\b1}%s{\\b0}', s)
 end
@@ -280,15 +296,29 @@ function ev_seek()
 	tm_tick:resume()
 end
 
+function getFileName(path)
+    return path:match("(.+)%..+")
+end
+
+function fileExists(name)
+    local f = io.open(name, "r")
+    if f ~= nil then
+	io.close(f)
+	return true
+    else
+	return false
+    end
+end
+
 function ev_start_file()
 	local path = mp.get_property('path')
 	if path == nil then
 		return
 	end
-	local pat_twitch_vod = 'twitch.tv/videos/(%d+)'
-	local video_id = string.match(path, pat_twitch_vod)
-	if video_id ~= nil then
-		chat = TwitchChat.new(video_id)
+
+	local rechat_file = getFileName(path) .. ".rechat.json"
+	if fileExists(rechat_file) then
+		chat = TwitchChat.new(rechat_file)
 		tm_tick:resume()
 		tm_redraw:resume()
 		tm_redraw_enabled = true
