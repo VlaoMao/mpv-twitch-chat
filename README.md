@@ -9,3 +9,9 @@ Displays Twitch.tv chat replay when watching VoDs with mpv.
 	- OS X: `brew install lua`
 	- Arch Linux: `pacman -S luarocks5.2`
 - Run `install.sh`
+
+# Preparation
+
+- Download twitch video to file (example: video.mp4)
+- Download rechat file in json format (via tcd: tcd --format json --video xxxxx) and name it according to video filename (video.rechat.json)
+- run mpv
